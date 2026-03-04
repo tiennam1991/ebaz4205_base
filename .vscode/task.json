@@ -1,0 +1,15 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Build for Ebaz4205 (SDK)",
+            "type": "shell",
+            "command": "source ~/ebaz_sdk/environment-setup-cortexa9t2hf-neon-xilinx-linux-gnueabi && $CC ${file} -o ${fileBasenameNoExtension} $CFLAGS $LDFLAGS -lpthread",
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": ["$gcc"]
+        }
+    ]
+}

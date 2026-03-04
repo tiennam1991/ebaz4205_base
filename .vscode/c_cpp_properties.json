@@ -1,0 +1,30 @@
+{
+    "configurations": [
+        {
+            "name": "Ebaz4205-Zynq-32bit-SDK",
+            "includePath": [
+                "${workspaceFolder}/**",
+                "/home/nam/ebaz_sdk/sysroots/cortexa9t2hf-neon-xilinx-linux-gnueabi/usr/include/**"
+            ],
+            "defines": [
+                "__arm__",
+                "LINUX"
+            ],
+            "compilerPath": "/home/nam/ebaz_sdk/sysroots/x86_64-petalinux-linux/usr/bin/arm-xilinx-linux-gnueabi/arm-xilinx-linux-gnueabi-gcc",
+            "cStandard": "c11",
+            "cppStandard": "c++17",
+            "intelliSenseMode": "linux-gcc-arm",
+            "compilerArgs": [
+                "--sysroot=/home/nam/ebaz_sdk/sysroots/cortexa9t2hf-neon-xilinx-linux-gnueabi"
+            ],
+            "browse": {
+                "path": [
+                    "${workspaceFolder}",
+                    "/home/nam/ebaz_sdk/sysroots/cortexa9t2hf-neon-xilinx-linux-gnueabi/usr/include"
+                ],
+                "limitSymbolsToIncludedHeaders": false
+            }
+        }
+    ],
+    "version": 4
+}

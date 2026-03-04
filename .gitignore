@@ -1,0 +1,5 @@
+build/
+images/linux/
+*.o
+*.d
+.Xil/

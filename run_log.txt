@@ -1,0 +1,34 @@
+root@ebaz4205:~# ./main_app
+==========================================
+   EBAZ4205 FULL HARDWARE CONTROL APP
+==========================================
+[OK] Luồng PWM_UNIT đã chạy (UIO).
+[OK] Luồng ENCODER đã chạy (UIO).
+[ENCODER Update] Giá trị: 0x00000000 (0)
+[OK] Luồng UDP TX đã chạy (Đích 192.168.1.123:2027).
+[OK] Luồng UDP RX đã chạy (Port 2026).
+[OK] Luồng UART 2 (/dev/ttyUL2) đã chạy.
+[OK] Luồng UART 4 (/dev/ttyUL4) đã chạy.
+[OK] Luồng UART 6 (/dev/ttyUL6) đã chạy.
+[Hệ thống] Tất cả 14 luồng đã khởi chạy.
+
+[OK] Luồng UART 8 (/dev/ttyUL8) đã chạy.
+[OK] Luồng UART 1 (/dev/ttyUL1) đã chạy.
+[PWM_UNIT Update] Giá trị: 0x00000000 (0)
+[OK] Luồng UART 10 (/dev/ttyUL10) đã chạy.
+[OK] Luồng UART 9 (/dev/ttyUL9) đã chạy.
+[OK] Luồng UART 7 (/dev/ttyUL7) đã chạy.
+[OK] Luồng UART 5 (/dev/ttyUL5) đã chạy.
+[OK] Luồng UART 3 (/dev/ttyUL3) đã chạy.
+^C
+root@ebaz4205:~# ./main_app
+=== KHOI DONG HE THONG Ebaz4205 (Global Scope) ===
+[OK] Luồng PWM_UNIT đã chạy.
+[OK] Luồng ENCODER đã chạy.
+[Hệ thống] Đang vận hành 14 luồng...
+^C
+root@ebaz4205:~# sync
+root@ebaz4205:~# ./main_app
+Hệ thống giám sát Web đã khởi động trên cổng 80.
+[OK] Web Server chạy tại http://192.168.1.6
+
