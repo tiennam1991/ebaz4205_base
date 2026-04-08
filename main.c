@@ -96,8 +96,91 @@ void* led_heartbeat_worker(void* arg) {
     int s = 0; while(1) { s=!s; gpio_op(out_pins[2], "value", s?"1":"0"); gpio_out[2]=s; usleep(500000); }
 }
 
-// Luồng UART nhận data
+// Màu sắc để phân biệt các UART trên Terminal
+const char* port_colors[] = {
+    "\033[1;31m", // Đỏ
+    "\033[1;32m", // Xanh lá
+    "\033[1;33m", // Vàng
+    "\033[1;34m", // Xanh dương
+    "\033[1;35m", // Tím
+    "\033[1;36m", // Xanh lơ
+    "\033[1;37m", // Trắng
+    "\033[0;31m", // Đỏ nhạt
+    "\033[0;32m", // Xanh lá nhạt
+    "\033[0;36m"  // Xanh lơ nhạt
+};
+#define RESET_COLOR "\033[0m"
+
 void* uart_worker(void* arg) {
+    uart_info_t *ui = (uart_info_t*)arg;
+    struct termios cfg;
+    
+    // Bộ đệm tích lũy cho riêng thread này
+    char line_buf[256]; 
+    int line_idx = 0;
+    
+    // Mở cổng UART
+    ui->fd = open(ui->path, O_RDWR | O_NOCTTY); 
+    if(ui->fd < 0) return NULL;
+
+    // Cấu hình UART (giữ nguyên Raw Mode như trước)
+    tcgetattr(ui->fd, &cfg);
+    cfsetispeed(&cfg, B115200);
+    cfsetospeed(&cfg, B115200);
+    cfg.c_cflag |= (CLOCAL | CREAD | CS8);
+    cfg.c_lflag &= ~(ICANON | ECHO | ECHOE | ISIG); 
+    cfg.c_iflag &= ~(IXON | IXOFF | IXANY | ICRNL);
+    cfg.c_oflag &= ~OPOST;
+    cfg.c_cc[VMIN] = 1; 
+    cfg.c_cc[VTIME] = 1; 
+    tcsetattr(ui->fd, TCSANOW, &cfg);
+
+    char temp_rx[64];
+    while(1) {
+        int n = read(ui->fd, temp_rx, sizeof(temp_rx) - 1);
+        if(n > 0) {
+            for(int i = 0; i < n; i++) {
+                char c = temp_rx[i];
+
+                // Nếu gặp ký tự kết thúc dòng
+                if(c == '\n' || c == '\r') {
+                    if(line_idx > 0) { // Chỉ xử lý nếu trong buffer đã có dữ liệu
+                        line_buf[line_idx] = 0; // Kết thúc chuỗi
+                        clean_str(line_buf);
+
+                        // 1. In ra Terminal (Cả dòng hoàn chỉnh)
+                        printf("%s[UART %d] RX: %s%s\n", 
+                               port_colors[(ui->id - 1) % 10], 
+                               ui->id, line_buf, RESET_COLOR);
+                        fflush(stdout);
+
+                        // 2. Cập nhật cho Web Dashboard
+                        pthread_mutex_lock(&ui->lock);
+                        strncpy(ui->last_rx, line_buf, 63);
+                        ui->last_rx[63] = '\0';
+                        pthread_mutex_unlock(&ui->lock);
+
+                        // 3. Reset index để chờ dòng tiếp theo
+                        line_idx = 0;
+                    }
+                } 
+                else {
+                    // Nếu là ký tự in được, thêm vào bộ đệm tích lũy
+                    if(line_idx < sizeof(line_buf) - 1) {
+                        line_buf[line_idx++] = c;
+                    } else {
+                        // Tràn bộ đệm thì ép buộc reset
+                        line_idx = 0;
+                    }
+                }
+            }
+        }
+    }
+    return NULL;
+}
+
+// Luồng UART nhận data
+void* uart_worker2(void* arg) {
     uart_info_t *ui = (uart_info_t*)arg;
     ui->fd = open(ui->path, O_RDWR | O_NOCTTY | O_NDELAY);
     if(ui->fd < 0) return NULL;
@@ -105,8 +188,15 @@ void* uart_worker(void* arg) {
     cfsetispeed(&cfg, B115200); cfsetospeed(&cfg, B115200);
     cfg.c_cflag |= (CLOCAL | CREAD | CS8); tcsetattr(ui->fd, TCSANOW, &cfg);
     while(1) {
-        char buf[64]; int n = read(ui->fd, buf, 63);
-        if(n > 0) { buf[n]=0; clean_str(buf); pthread_mutex_lock(&ui->lock); strcpy(ui->last_rx, buf); pthread_mutex_unlock(&ui->lock); }
+        char buf[64]; 
+        int n = read(ui->fd, buf, 63);
+        if(n > 0) 
+        { 
+            buf[n]=0; clean_str(buf); 
+            pthread_mutex_lock(&ui->lock); 
+            strcpy(ui->last_rx, buf); 
+            pthread_mutex_unlock(&ui->lock); 
+        }
         usleep(100000);
     }
 }
@@ -186,6 +276,83 @@ void* udp_tx_worker(void* arg) {
     }
 }
 
+int init_can(const char *ifname) {
+    int s;
+    struct sockaddr_can addr;
+    struct ifreq ifr;
+
+    // 1. Tạo socket
+    if ((s = socket(PF_CAN, SOCK_RAW, CAN_RAW)) < 0) {
+        perror("SocketCAN: Thất bại khi tạo socket");
+        return -1;
+    }
+
+    // 2. Xác định index của giao diện
+    memset(&ifr, 0, sizeof(ifr));
+    strncpy(ifr.ifr_name, ifname, IFNAMSIZ - 1);
+    if (ioctl(s, SIOCGIFINDEX, &ifr) < 0) {
+        perror("SocketCAN: Không tìm thấy interface");
+        close(s);
+        return -1;
+    }
+
+    // 3. Bind socket
+    memset(&addr, 0, sizeof(addr));
+    addr.can_family = AF_CAN;
+    addr.can_ifindex = ifr.ifr_ifindex;
+
+    if (bind(s, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        perror("SocketCAN: Bind thất bại");
+        close(s);
+        return -1;
+    }
+    
+    return s;
+}
+
+int can_send(int sock, uint32_t id, uint8_t *data, uint8_t len) {
+    struct can_frame frame;
+    memset(&frame, 0, sizeof(frame)); // Xóa sạch frame trước khi gán
+
+    // Hỗ trợ cả Extended ID nếu ID > 0x7FF
+    if (id > 0x7FF) {
+        frame.can_id = id | CAN_EFF_FLAG;
+    } else {
+        frame.can_id = id;
+    }
+
+    frame.can_dlc = (len > 8) ? 8 : len;
+    memcpy(frame.data, data, frame.can_dlc);
+
+    // Gửi dữ liệu
+    int nbytes = write(sock, &frame, sizeof(struct can_frame));
+    if (nbytes != sizeof(struct can_frame)) {
+        // Nếu trả về -1 và errno là EAGAIN, nghĩa là bộ đệm TX đầy (Bus lỗi)
+        perror("SocketCAN: Gửi lỗi");
+        return -1;
+    }
+    return 0;
+}
+
+// Luồng gửi CAN
+void* can_tx_worker(void* arg) {
+    while(1) 
+    { 
+        // --- Gửi dữ liệu ra CAN0 ---
+        uint8_t can0_data[8] = {0x11, 0x22, 0x33, 0x44, 0x00, 0x00, 0x00, 0x00};
+        // Giả sử gửi giá trị ADC0 vào 2 byte đầu của CAN0
+        can0_data[4] = (adc_raw[0] >> 8) & 0xFF;
+        can0_data[5] = adc_raw[0] & 0xFF;
+        can_send(can0_sock, 0x123, can0_data, 8); // Gửi ID 0x123
+
+        // --- Gửi dữ liệu ra CAN1 ---
+        uint8_t can1_data[8] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11};
+        can_send(can1_sock, 0x456, can1_data, 8); // Gửi ID 0x456
+
+        sleep(1);
+    }
+}
+
 // Hàm gửi dữ liệu ra một cổng UART cụ thể (index 0-9)
 void uart_send(int index, const char *msg) {
     if (index < 0 || index >= UART_COUNT || u_info[index].fd < 0) return;
@@ -201,46 +368,7 @@ void uart_send(int index, const char *msg) {
     pthread_mutex_unlock(&u_info[index].lock);
 }
 
-int init_can(const char *ifname) {
-    int s;
-    struct sockaddr_can addr;
-    struct ifreq ifr;
 
-    // 1. Tạo socket
-    if ((s = socket(PF_CAN, SOCK_RAW, CAN_RAW)) < 0) {
-        perror("SocketCAN: Tạo socket thất bại");
-        return -1;
-    }
-
-    // 2. Xác định index của giao diện (can0, can1)
-    strcpy(ifr.ifr_name, ifname);
-    ioctl(s, SIOCGIFINDEX, &ifr);
-
-    // 3. Bind socket vào giao diện
-    memset(&addr, 0, sizeof(addr));
-    addr.can_family = AF_CAN;
-    addr.can_ifindex = ifr.ifr_ifindex;
-
-    if (bind(s, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        perror("SocketCAN: Bind thất bại");
-        return -1;
-    }
-    return s;
-}
-
-int can_send(int sock, uint32_t id, uint8_t *data, uint8_t len) {
-    struct can_frame frame;
-    
-    frame.can_id = id;          // ID của gói tin CAN
-    frame.can_dlc = len > 8 ? 8 : len; // CAN tiêu chuẩn tối đa 8 byte
-    memcpy(frame.data, data, frame.can_dlc);
-
-    if (write(sock, &frame, sizeof(struct can_frame)) != sizeof(struct can_frame)) {
-        perror("SocketCAN: Gửi thất bại");
-        return -1;
-    }
-    return 0;
-}
 
 int main() {
     pthread_t t[20];
@@ -254,22 +382,25 @@ int main() {
         sprintf(cmd, "echo in > /sys/class/gpio/gpio%d/direction", in_pins[i]+GPIO_BASE); system(cmd);
     }
 
-    pthread_create(&t[0], NULL, led_heartbeat_worker, NULL);
-    pthread_create(&t[1], NULL, web_worker, NULL);
-    pthread_create(&t[2], NULL, udp_tx_worker, NULL);
-    pthread_create(&t[3], NULL, adc_worker, NULL); // Chạy luồng đọc ADC
-
-    for(int i=0; i<UART_COUNT; i++) {
-        u_info[i].id=i+1; sprintf(u_info[i].path, "/dev/ttyUL%d", i+1);
-        pthread_mutex_init(&u_info[i].lock, NULL);
-        pthread_create(&t[i+4], NULL, uart_worker, &u_info[i]);
-    }
-
     can0_sock = init_can("can0");
     can1_sock = init_can("can1");
 
     if(can0_sock >= 0) printf("CAN0 đã sẵn sàng!\n");
     if(can1_sock >= 0) printf("CAN1 đã sẵn sàng!\n");
+
+    pthread_create(&t[0], NULL, led_heartbeat_worker, NULL);
+    pthread_create(&t[1], NULL, web_worker, NULL);
+    pthread_create(&t[2], NULL, udp_tx_worker, NULL);
+    pthread_create(&t[3], NULL, can_tx_worker, NULL); // Chạy luồng đọc ADC
+    pthread_create(&t[4], NULL, adc_worker, NULL); // Chạy luồng đọc ADC
+
+    for(int i=0; i<UART_COUNT; i++) {
+        u_info[i].id=i+1; sprintf(u_info[i].path, "/dev/ttyUL%d", i+1);
+        pthread_mutex_init(&u_info[i].lock, NULL);
+        pthread_create(&t[i+5], NULL, uart_worker, &u_info[i]);
+    }
+
+   
 
     int send_time = 0;
     printf("Ebaz4205 v8 Full Integrated Ready! Web on Port 80, ADC MCP3208 Active.\n");
@@ -289,16 +420,7 @@ int main() {
             send_time = 0;
             char msg[64]; // Chỉ cần 1 buffer dùng chung cho vòng lặp
 
-            // --- Gửi dữ liệu ra CAN0 ---
-            uint8_t can0_data[8] = {0x11, 0x22, 0x33, 0x44, 0x00, 0x00, 0x00, 0x00};
-            // Giả sử gửi giá trị ADC0 vào 2 byte đầu của CAN0
-            can0_data[4] = (adc_raw[0] >> 8) & 0xFF;
-            can0_data[5] = adc_raw[0] & 0xFF;
-            can_send(can0_sock, 0x123, can0_data, 8); // Gửi ID 0x123
-
-            // --- Gửi dữ liệu ra CAN1 ---
-            uint8_t can1_data[8] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11};
-            can_send(can1_sock, 0x456, can1_data, 8); // Gửi ID 0x456
+            
 
             for (int i = 0; i < UART_COUNT; i++) 
             {
