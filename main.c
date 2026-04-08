@@ -282,16 +282,16 @@ void setup_can_hardware(const char *ifname, int bitrate) {
     sprintf(cmd, "ip link set %s down 2>/dev/null", ifname);
     system(cmd);
     
-    /* Thêm "restart-ms 100": Nếu bị Bus-off, sau 100ms nó sẽ tự động khởi động lại.
+    /* Thêm "restart-ms 1000": Nếu bị Bus-off, sau 1000ms nó sẽ tự động khởi động lại.
        Tăng "txqueuelen": Để bộ đệm chứa được nhiều gói tin hơn trước khi báo lỗi.
     */
-    sprintf(cmd, "ip link set %s up type can bitrate %d restart-ms 100", ifname, bitrate);
+    sprintf(cmd, "ip link set %s up type can bitrate %d restart-ms 1000", ifname, bitrate);
     system(cmd);
     
     sprintf(cmd, "ip link set %s txqueuelen 1000", ifname);
     system(cmd);
     
-    printf("[SYSTEM] %s đã được cấu hình: %d bps, tự động phục hồi sau 100ms\n", ifname, bitrate);
+    printf("[SYSTEM] %s đã được cấu hình: %d bps, tự động phục hồi sau 1000ms\n", ifname, bitrate);
 }
 
 int init_can(const char *ifname) {
@@ -344,6 +344,31 @@ int can_send(int sock, uint32_t id, uint8_t *data, uint8_t len) {
     return 0;
 }
 
+void* can_rx_worker(void* arg) {
+    int sock = *(int*)arg;
+    struct can_frame frame;
+    struct sockaddr_can addr;
+    socklen_t len = sizeof(addr);
+    char ifname[IFNAMSIZ];
+
+    while(1) {
+        // Dùng recvfrom thay vì read để lấy thông tin source address
+        int nbytes = recvfrom(sock, &frame, sizeof(struct can_frame), 0, 
+                              (struct sockaddr *)&addr, &len);
+        
+        if (nbytes > 0) {
+            // Chuyển đổi index (ví dụ: 1, 2) thành tên interface ("can0", "can1")
+            if_indextoname(addr.can_ifindex, ifname);
+
+            printf("\033[1;32m[%s]\033[0m ID: 0x%X Data: ", ifname, frame.can_id);
+            for (int i = 0; i < frame.can_dlc; i++) {
+            printf("%02X ", frame.data[i]);
+        }
+        printf("\n");
+        }
+    }
+}
+
 // Luồng gửi CAN
 void* can_tx_worker(void* arg) {
     while(1) 
@@ -355,11 +380,13 @@ void* can_tx_worker(void* arg) {
         can0_data[5] = adc_raw[0] & 0xFF;
         can_send(can0_sock, 0x123, can0_data, 8); // Gửi ID 0x123
 
+        usleep(100000); // 0.1 giây
+
         // --- Gửi dữ liệu ra CAN1 ---
         uint8_t can1_data[8] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11};
         can_send(can1_sock, 0x456, can1_data, 8); // Gửi ID 0x456
 
-        sleep(1);
+        usleep(100000); // 0.1 giây
     }
 }
 
@@ -381,7 +408,7 @@ void uart_send(int index, const char *msg) {
 
 
 int main() {
-    pthread_t t[20];
+    pthread_t t[24];
     int f0 = open("/dev/uio0", O_RDWR); pwm.ptr = mmap(NULL, MAP_SIZE, PROT_READ|PROT_WRITE, MAP_SHARED, f0, 0);
     int f1 = open("/dev/uio1", O_RDWR); enc.ptr = mmap(NULL, MAP_SIZE, PROT_READ|PROT_WRITE, MAP_SHARED, f1, 0);
     
@@ -405,13 +432,15 @@ int main() {
     pthread_create(&t[0], NULL, led_heartbeat_worker, NULL);
     pthread_create(&t[1], NULL, web_worker, NULL);
     pthread_create(&t[2], NULL, udp_tx_worker, NULL);
-    pthread_create(&t[3], NULL, can_tx_worker, NULL); // Chạy luồng đọc ADC
+    pthread_create(&t[3], NULL, can_tx_worker, NULL); // Chạy luồng gui CAN
     pthread_create(&t[4], NULL, adc_worker, NULL); // Chạy luồng đọc ADC
+    pthread_create(&t[5], NULL, can_rx_worker, &can0_sock); // Lắng nghe trên can0
+    pthread_create(&t[6], NULL, can_rx_worker, &can1_sock); // Lắng nghe trên can1
 
     for(int i=0; i<UART_COUNT; i++) {
         u_info[i].id=i+1; sprintf(u_info[i].path, "/dev/ttyUL%d", i+1);
         pthread_mutex_init(&u_info[i].lock, NULL);
-        pthread_create(&t[i+5], NULL, uart_worker, &u_info[i]);
+        pthread_create(&t[i+7], NULL, uart_worker, &u_info[i]);
     }
 
    
