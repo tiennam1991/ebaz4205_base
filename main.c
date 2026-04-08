@@ -13,6 +13,11 @@
 #include <ctype.h>
 #include <sys/ioctl.h>
 #include <linux/spi/spidev.h>
+#include <linux/can.h>
+#include <linux/can/raw.h>
+#include <net/if.h>
+
+int can0_sock, can1_sock;
 
 // --- Cấu hình ---
 #define UART_COUNT      10
@@ -196,6 +201,47 @@ void uart_send(int index, const char *msg) {
     pthread_mutex_unlock(&u_info[index].lock);
 }
 
+int init_can(const char *ifname) {
+    int s;
+    struct sockaddr_can addr;
+    struct ifreq ifr;
+
+    // 1. Tạo socket
+    if ((s = socket(PF_CAN, SOCK_RAW, CAN_RAW)) < 0) {
+        perror("SocketCAN: Tạo socket thất bại");
+        return -1;
+    }
+
+    // 2. Xác định index của giao diện (can0, can1)
+    strcpy(ifr.ifr_name, ifname);
+    ioctl(s, SIOCGIFINDEX, &ifr);
+
+    // 3. Bind socket vào giao diện
+    memset(&addr, 0, sizeof(addr));
+    addr.can_family = AF_CAN;
+    addr.can_ifindex = ifr.ifr_ifindex;
+
+    if (bind(s, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        perror("SocketCAN: Bind thất bại");
+        return -1;
+    }
+    return s;
+}
+
+int can_send(int sock, uint32_t id, uint8_t *data, uint8_t len) {
+    struct can_frame frame;
+    
+    frame.can_id = id;          // ID của gói tin CAN
+    frame.can_dlc = len > 8 ? 8 : len; // CAN tiêu chuẩn tối đa 8 byte
+    memcpy(frame.data, data, frame.can_dlc);
+
+    if (write(sock, &frame, sizeof(struct can_frame)) != sizeof(struct can_frame)) {
+        perror("SocketCAN: Gửi thất bại");
+        return -1;
+    }
+    return 0;
+}
+
 int main() {
     pthread_t t[20];
     int f0 = open("/dev/uio0", O_RDWR); pwm.ptr = mmap(NULL, MAP_SIZE, PROT_READ|PROT_WRITE, MAP_SHARED, f0, 0);
@@ -219,6 +265,12 @@ int main() {
         pthread_create(&t[i+4], NULL, uart_worker, &u_info[i]);
     }
 
+    can0_sock = init_can("can0");
+    can1_sock = init_can("can1");
+
+    if(can0_sock >= 0) printf("CAN0 đã sẵn sàng!\n");
+    if(can1_sock >= 0) printf("CAN1 đã sẵn sàng!\n");
+
     int send_time = 0;
     printf("Ebaz4205 v8 Full Integrated Ready! Web on Port 80, ADC MCP3208 Active.\n");
     while(1) 
@@ -233,33 +285,29 @@ int main() {
         send_time++;
         if(send_time >= 5) 
         { 
-        // Mỗi 5 chu kỳ (1 giây), gửi dữ liệu ADC0 ra UART1
-        send_time = 0;
-        // Ví dụ: Gửi dữ liệu ADC0 ra UART1 mỗi chu kỳ
-        char test_msg[10][32];
-        sprintf(test_msg[0], "UART %d ready\r\n", 1); // Gửi số hiệu UART để dễ phân biệt
-        sprintf(test_msg[1], "UART %d ready\r\n", 2);
-        sprintf(test_msg[2], "UART %d ready\r\n", 3);
-        sprintf(test_msg[3], "UART %d ready\r\n", 4);
-        sprintf(test_msg[4], "UART %d ready\r\n", 5);
-        sprintf(test_msg[5], "UART %d ready\r\n", 6);
-        sprintf(test_msg[6], "UART %d ready\r\n", 7);
-        sprintf(test_msg[7], "UART %d ready\r\n", 8);
-        sprintf(test_msg[8], "UART %d ready\r\n", 9);
-        sprintf(test_msg[9], "UART %d ready\r\n", 10);
+            // Mỗi 5 chu kỳ (1 giây), gửi dữ liệu ADC0 ra UART1
+            send_time = 0;
+            char msg[64]; // Chỉ cần 1 buffer dùng chung cho vòng lặp
 
-        uart_send(0, test_msg[0]); // 0 là ttyUL1
-        uart_send(1, test_msg[1]); // 1 là ttyUL2
-        uart_send(2, test_msg[2]); // 2 là ttyUL3
-        uart_send(3, test_msg[3]); // 3 là ttyUL4
-        uart_send(4, test_msg[4]); // 4 là ttyUL5
-        uart_send(5, test_msg[5]); // 5 là ttyUL6
-        uart_send(6, test_msg[6]); // 6 là ttyUL7
-        uart_send(7, test_msg[7]); // 7 là ttyUL8
-        uart_send(8, test_msg[8]); // 8 là ttyUL9
-        uart_send(9, test_msg[9]); // 9 là ttyUL10
+            // --- Gửi dữ liệu ra CAN0 ---
+            uint8_t can0_data[8] = {0x11, 0x22, 0x33, 0x44, 0x00, 0x00, 0x00, 0x00};
+            // Giả sử gửi giá trị ADC0 vào 2 byte đầu của CAN0
+            can0_data[4] = (adc_raw[0] >> 8) & 0xFF;
+            can0_data[5] = adc_raw[0] & 0xFF;
+            can_send(can0_sock, 0x123, can0_data, 8); // Gửi ID 0x123
 
+            // --- Gửi dữ liệu ra CAN1 ---
+            uint8_t can1_data[8] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11};
+            can_send(can1_sock, 0x456, can1_data, 8); // Gửi ID 0x456
 
+            for (int i = 0; i < UART_COUNT; i++) 
+            {
+                // Tạo nội dung thông báo
+                sprintf(msg, "UART %d ready (ADC0: %d)\r\n", i + 1, adc_raw[0]);
+                
+                // Gửi dữ liệu
+                uart_send(i, msg);
+            }
         }
     }
     return 0;
