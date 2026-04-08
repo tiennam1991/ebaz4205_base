@@ -276,6 +276,24 @@ void* udp_tx_worker(void* arg) {
     }
 }
 
+void setup_can_hardware(const char *ifname, int bitrate) {
+    char cmd[256];
+    // Tắt interface trước
+    sprintf(cmd, "ip link set %s down 2>/dev/null", ifname);
+    system(cmd);
+    
+    /* Thêm "restart-ms 100": Nếu bị Bus-off, sau 100ms nó sẽ tự động khởi động lại.
+       Tăng "txqueuelen": Để bộ đệm chứa được nhiều gói tin hơn trước khi báo lỗi.
+    */
+    sprintf(cmd, "ip link set %s up type can bitrate %d restart-ms 100", ifname, bitrate);
+    system(cmd);
+    
+    sprintf(cmd, "ip link set %s txqueuelen 1000", ifname);
+    system(cmd);
+    
+    printf("[SYSTEM] %s đã được cấu hình: %d bps, tự động phục hồi sau 100ms\n", ifname, bitrate);
+}
+
 int init_can(const char *ifname) {
     int s;
     struct sockaddr_can addr;
@@ -312,23 +330,15 @@ int init_can(const char *ifname) {
 
 int can_send(int sock, uint32_t id, uint8_t *data, uint8_t len) {
     struct can_frame frame;
-    memset(&frame, 0, sizeof(frame)); // Xóa sạch frame trước khi gán
+    memset(&frame, 0, sizeof(frame));
 
-    // Hỗ trợ cả Extended ID nếu ID > 0x7FF
-    if (id > 0x7FF) {
-        frame.can_id = id | CAN_EFF_FLAG;
-    } else {
-        frame.can_id = id;
-    }
-
+    frame.can_id = (id > 0x7FF) ? (id | CAN_EFF_FLAG) : id;
     frame.can_dlc = (len > 8) ? 8 : len;
     memcpy(frame.data, data, frame.can_dlc);
 
-    // Gửi dữ liệu
-    int nbytes = write(sock, &frame, sizeof(struct can_frame));
-    if (nbytes != sizeof(struct can_frame)) {
-        // Nếu trả về -1 và errno là EAGAIN, nghĩa là bộ đệm TX đầy (Bus lỗi)
-        perror("SocketCAN: Gửi lỗi");
+    if (write(sock, &frame, sizeof(struct can_frame)) != sizeof(struct can_frame)) {
+        // Chỉ in lỗi nếu không phải lỗi tràn bộ đệm (tránh làm rác terminal)
+        // if (errno != ENOBUFS) perror("SocketCAN Write Error");
         return -1;
     }
     return 0;
@@ -381,6 +391,10 @@ int main() {
         sprintf(cmd, "echo %d > /sys/class/gpio/export 2>/dev/null", in_pins[i]+GPIO_BASE); system(cmd);
         sprintf(cmd, "echo in > /sys/class/gpio/gpio%d/direction", in_pins[i]+GPIO_BASE); system(cmd);
     }
+
+    // Gọi hàm này trước khi gọi init_can
+    setup_can_hardware("can0", 500000); 
+    setup_can_hardware("can1", 500000);
 
     can0_sock = init_can("can0");
     can1_sock = init_can("can1");
