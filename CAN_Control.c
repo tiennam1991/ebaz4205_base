@@ -260,7 +260,7 @@ int CAN_Init_All(void) {
         fprintf(stderr, "[CAN] Failed to initialize can0.\n");
         return -1;
     }
-    
+    // kiem tra can1 sau khi can0 đã được mở thành công, nếu can1 lỗi thì đóng can0 để dọn dẹp
     if (CAN_Init(&Erob_Can1, "can1") != 0) {
         fprintf(stderr, "[CAN] Failed to initialize can1.\n");
         CAN_Close(&Erob_Can1); // Dọn dẹp cái đã mở trước đó
